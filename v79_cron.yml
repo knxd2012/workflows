@@ -1,0 +1,33 @@
+name: V79_Auto_Predictor
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # 每小時執行一次
+  workflow_dispatch:      # 允許手動執行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas numpy lightgbm beautifulsoup4 requests curl_cffi selenium
+
+      - name: Run V79 Main
+        run: python main.py
+
+      - name: Commit and Push Results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add web_results.json
+          git commit -m "Auto update predictions: $(date)" || exit 0
+          git push
