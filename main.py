@@ -19,11 +19,11 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# ==================== 1. 環境判斷與庫導入 ====================
+# ==================== 1. 環境判斷與核心導入 ====================
 try:
     from curl_cffi import requests
     HAS_CFFI = True
-    print("🚀 使用 curl_cffi (潛行模式已啟動)")
+    print("🚀 使用 curl_cffi (潛行 TLS 模式已啟動)")
 except ImportError:
     import requests
     HAS_CFFI = False
@@ -31,13 +31,13 @@ except ImportError:
 
 try:
     import V79_Core
-    print("✅ V79_Core 載入成功")
+    print("✅ V79_Core 核心邏輯載入成功")
 except ImportError:
-    print("🚨 錯誤：找不到 V79_Core.py，請確認檔案已在目前目錄下。")
+    print("🚨 錯誤：找不到 V79_Core.py。請確認檔案已在目前目錄並更名正確。")
 
 warnings.filterwarnings('ignore')
 
-# ==================== 2. 全域配置與白名單 ====================
+# ==================== 2. 全域配置 ====================
 WHITE_LIST = [
     "英甲", "巴西甲", "德乙", "挪超", "葡超", "瑞典超", "美职业", "阿甲", "英冠", "沙特联",
     "英超", "荷乙", "苏超", "德甲", "西乙", "芬超", "荷甲", "法乙", "西甲", "法甲",
@@ -50,103 +50,120 @@ DIR_EU = "temp_eu"
 DIR_AS = "temp_as2"
 USER_AGENTS = ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"]
 
-# ==================== 3. Colab 專用 Driver 配置 (核心修復) ====================
+# ==================== 3. Colab 專用 WebDriver 配置 ====================
 def create_driver():
     options = Options()
-    # --- Colab 必須參數 ---
+    # Colab 必須參數
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
-    options.binary_location = "/usr/bin/chromium-browser" # 指向 Colab 的二進制文件
+    # 指向 Colab 環境中 Chromium 的位置
+    options.binary_location = "/usr/bin/chromium-browser"
     
-    # --- 潛行偽裝 ---
+    # 隱藏自動化特徵
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument(f'user-agent={random.choice(USER_AGENTS)}')
     
     driver = webdriver.Chrome(options=options)
+    # 執行 CDP 隱藏 webdriver 屬性
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     })
     return driver
 
-# ==================== 4. 獲取 Match ID (直接掃描 bf.js) ====================
-def get_realtime_match_ids():
+# ==================== 4. 獲取 Match ID (從 bf.js 數據源) ====================
+def get_match_ids_from_bf_js():
     """
-    透過 Selenium 直接開啟 bf.js 數據源
-    這是避開 404/Error 56 獲取 Match ID 最穩定的做法
+    透過 Selenium 直接訪問 bf.js 數據源並解析 A 陣列
+    這是獲取 Match ID 的唯一穩定途徑
     """
     timestamp = int(time.time() * 1000)
     url = f"http://live.nowscore.com/data/bf.js?{timestamp}"
     
-    print(f"📡 正在從數據源獲取賽事 (bf.js)...")
+    print(f"📡 正在連接 Nowscore 核心數據源 (bf.js)...")
     driver = create_driver()
     final_ids = []
     
     try:
         driver.get(url)
-        time.sleep(5) # 等待文本加載
+        time.sleep(5) # 等待文本渲染
         
-        # 在瀏覽器中，JS 文件內容通常被包裹在 <pre> 標籤內
+        # 提取純文本內容
         try:
             content = driver.find_element(By.TAG_NAME, "pre").text
         except:
             content = driver.page_source
             
         if "A[" not in content:
-            print("⚠️ 數據源為空或被攔截")
+            print("⚠️ 數據讀取失敗，內容不含 A 陣列關鍵字")
             return []
 
-        # 解析聯賽 B 陣列
+        # 1. 提取聯賽 B 陣列 (處理格式: B[i] = [ ... ] 或 B[i] = " ... ")
         leagues_map = {}
+        # 支持字串與數組兩種格式
         b_raw = re.findall(r'B\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
         for idx, val in b_raw:
             parts = val.replace("'", "").split('^')
-            if len(parts) > 0: leagues_map[idx] = parts[0].strip()
+            if len(parts) > 0:
+                leagues_map[idx] = parts[0].strip()
         
-        # 解析賽事 A 陣列
+        # 2. 提取賽事 A 陣列 (處理格式: A[i] = [ ... ] 或 A[i] = " ... ")
         a_raw = re.findall(r'A\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
+        print(f"🔎 掃描到 {len(a_raw)} 場即時賽事...")
+
         for idx, val in a_raw:
-            # 判斷是逗號分隔還是尖括號分隔
-            parts = [p.strip().strip("'") for p in val.split('^')] if "^" in val else [p.strip().strip("'") for p in val.split(',')]
+            # 兼容處理：如果是 [1,2,3] 格式則用逗號分，如果是 "1^2^3" 格式則用 ^ 分
+            if "^" in val:
+                parts = [p.strip().strip("'").strip('"') for p in val.split('^')]
+            else:
+                parts = [p.strip().strip("'").strip('"') for p in val.split(',')]
             
             if len(parts) < 10: continue
             
             match_id = parts[0]
-            league_name = leagues_map.get(parts[1], "")
+            league_idx = parts[1]
+            league_name = leagues_map.get(league_idx, "")
             
-            # 過濾白名單
+            # 過濾白名單聯賽
             if any(target in league_name for target in WHITE_LIST):
                 final_ids.append(match_id)
         
         print(f"✅ 成功提取 {len(final_ids)} 場白名單賽事 ID")
     except Exception as e:
-        print(f"❌ 獲取 bf.js 失敗: {e}")
+        print(f"❌ 解析 bf.js 報錯: {e}")
     finally:
         driver.quit()
     return list(set(final_ids))
 
-# ==================== 5. 爬蟲 Worker ====================
+# ==================== 5. 數據清洗與解析輔助 (預防核心缺失) ====================
 def parse_teams_eu(soup):
     title = soup.find('title')
-    if not title: return 'Unknown', 'Unknown'
+    if not title: return 'Home', 'Away'
     teams = re.search(r'[:：]\s*(.+?)\s+VS\s+(.+?)(?:数据分析|$)', title.text)
-    return (teams.group(1).strip(), teams.group(2).strip()) if teams else ('Unknown', 'Unknown')
+    return (teams.group(1).strip(), teams.group(2).strip()) if teams else ('Home', 'Away')
 
+def parse_league_eu(soup):
+    top_div = soup.find('div', id='top')
+    if top_div:
+        span = top_div.find('span', class_='line1')
+        if span: return span.text.strip()
+    return 'Unknown'
+
+# ==================== 6. 非同步爬蟲 Worker ====================
 def scrape_eu_worker(match_chunk, progress, lock):
     batch = []
     for mid in match_chunk:
         url = f"https://m.nowscore.com/1x2Detail/{mid}_177.htm"
         try:
-            # 獲取詳情頁
+            # 使用 http_version=1 防止 HTTP/2 錯誤
             r = requests.get(url, timeout=12, impersonate="chrome120", http_version=1) if HAS_CFFI else requests.get(url, timeout=12)
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, 'html.parser')
                 home, away = parse_teams_eu(soup)
-                top_div = soup.find('div', id='top')
-                league = top_div.find('span', class_='line1').text.strip() if top_div else "Unknown"
+                league = parse_league_eu(soup)
                 ko_tag = soup.find(string=re.compile(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}'))
                 
                 for table in soup.find_all('table'):
@@ -158,7 +175,8 @@ def scrape_eu_worker(match_chunk, progress, lock):
                                 'match_id': mid, 'home_team': home, 'away_team': away,
                                 'league': league, 'kickoff_time': ko_tag.strip() if ko_tag else "",
                                 'home_odds': cols[0].text.strip(), 'draw_odds': cols[1].text.strip(),
-                                'away_odds': cols[2].text.strip(), 'change_time': cols[5].text.strip()
+                                'away_odds': cols[2].text.strip(), 'return_rate': cols[3].text.strip(),
+                                'change_time': cols[5].text.strip()
                             })
             with lock: progress['eu'] += 1
         except: continue
@@ -185,56 +203,58 @@ def scrape_as_worker(match_chunk, progress, lock):
     if batch: pd.DataFrame(batch).to_csv(os.path.join(DIR_AS, f"as_{random.randint(0,999)}.csv"), index=False)
     driver.quit()
 
-# ==================== 6. 主程序入口 ====================
+# ==================== 7. 主程式邏輯 ====================
 def main():
     start_time = time.time()
     os.makedirs(DIR_EU, exist_ok=True); os.makedirs(DIR_AS, exist_ok=True)
     
     # 1. 獲取 Match IDs
-    ids = get_realtime_match_ids()
+    ids = get_match_ids_from_bf_js()
     if not ids:
-        print("📭 目前無符合條件之賽事。"); return
+        print("📭 目前無符合白名單之賽事，結束任務。"); return
 
-    # 2. 啟動爬蟲引擎
-    print(f"🚀 開始分析 {len(ids)} 場精選賽事...")
+    # 2. 啟動非同步雙軌爬蟲
+    print(f"🚀 開始抓取 {len(ids)} 場賽事數據...")
     lock = threading.Lock(); progress = {'eu': 0, 'as': 0}
     
     with ThreadPoolExecutor(max_workers=4) as executor:
         executor.submit(scrape_eu_worker, ids, progress, lock)
         executor.submit(scrape_as_worker, ids, progress, lock)
     
-    # 3. 合併數據 (CSV)
+    # 3. 合併臨時 CSV
     eu_files = glob.glob(os.path.join(DIR_EU, "*.csv"))
     if eu_files: pd.concat([pd.read_csv(f) for f in eu_files]).to_csv("predict_eu16.csv", index=False)
     
     as_files = glob.glob(os.path.join(DIR_AS, "*.csv"))
     if as_files: pd.concat([pd.read_csv(f) for f in as_files]).to_csv("predict_n1n416.csv", index=False)
     
-    # 4. 推論結果
+    # 4. 執行 V79 模型推論
     if os.path.exists(MODEL_PATH):
-        print("🧠 啟動 V79 黃金預測模組...")
+        print("🧠 載入 V79 雙擎預測系統...")
         with open(MODEL_PATH, "rb") as f: bundle = pickle.load(f)
         try:
-            # 呼叫你上傳的 V79_Core 原版邏輯
+            # 調用 V79_Core 的 prepare_dataset
             fu_df = V79_Core.prepare_dataset("predict_eu16.csv", "predict_n1n416.csv", is_train=False)
             if not fu_df.empty:
+                # 執行預測並獲取 DataFrame
                 rec = V79_Core.predict_and_print(bundle, fu_df)
-                # 存成網頁用 JSON
+                
+                # 輸出為網頁所需的 JSON 格式
                 web_data = {
                     "update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "results": rec[['match_id', 'league', 'home_team', 'away_team', 'Action', 'prob_Fav', 'Pat_L']].to_dict(orient='records')
                 }
                 with open(FINAL_JSON, 'w', encoding='utf-8') as f:
                     json.dump(web_data, f, ensure_ascii=False, indent=4)
-                print(f"🎉 成功！結果已存至 {FINAL_JSON}")
+                print(f"🎉 任務圓滿完成！預測清單已產出至 {FINAL_JSON}")
             else:
-                print("⚠️ 無符合 V79 門檻條件之數據。")
+                print("⚠️ 數據清洗後無符合 T-13 門檻之賽事。")
         except Exception as e:
-            print(f"❌ 預測階段出錯: {e}")
+            print(f"❌ V79 預測階段發生錯誤: {e}")
     else:
-        print(f"🚨 找不到模型：{MODEL_PATH}")
+        print(f"🚨 錯誤：找不到模型檔 {MODEL_PATH}")
 
-    print(f"⌛ 耗時: {(time.time() - start_time)/60:.2f} 分鐘")
+    print(f"⌛ 總耗時: {(time.time() - start_time)/60:.2f} 分鐘")
 
 if __name__ == "__main__":
     main()
