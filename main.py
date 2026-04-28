@@ -19,7 +19,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# ==================== 1. 修正匯入區塊 ====================
+# ==================== 1. 匯入與環境判斷 ====================
 try:
     from curl_cffi import requests
     HAS_CFFI = True
@@ -32,6 +32,7 @@ except ImportError:
 # 嘗試導入 V79 核心
 try:
     import V79_Core
+    print("✅ V79_Core 載入成功")
 except ImportError:
     print("🚨 找不到 V79_Core.py，請確認檔名是否完全一致。")
 
@@ -44,9 +45,6 @@ WHITE_LIST = [
     "意甲", "韩K联", "日职联", "日皇杯", "挪女超", "日職乙", "南美杯", "澳超", "解放者杯", "欧冠杯", "澳洲甲"
 ]
 
-MAX_WORKERS_EU = 10
-MAX_WORKERS_AS = 4
-
 EU_OUTPUT_FILE = "predict_eu16.csv"
 AS_OUTPUT_FILE = "predict_n1n416.csv"
 FINAL_JSON = "web_results.json"
@@ -55,7 +53,7 @@ DIR_AS = "temp_as2"
 MODEL_PATH = "models_v79/AH_V79_DUAL_T13H.pkl"
 USER_AGENTS = ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"]
 
-# ==================== 3. 解析函數 (輔助 V79_Core) ====================
+# ==================== 3. 爬蟲解析輔助函數 ====================
 def parse_teams_eu(soup):
     title = soup.find('title')
     if not title: return 'Unknown Home', 'Unknown Away'
@@ -77,7 +75,7 @@ def parse_kickoff_time_eu(soup):
         except: pass
     return pd.NaT
 
-# ==================== 4. 自動獲取 Match ID (含重試與 HTTP 降級) ====================
+# ==================== 4. 自動獲取 Match ID (修正 http_version) ====================
 def get_realtime_match_ids():
     timestamp = int(time.time() * 1000)
     url = f"https://live.nowscore.com/data/bf.js?{timestamp}"
@@ -87,8 +85,8 @@ def get_realtime_match_ids():
         try:
             print(f"📡 正在嘗試獲取賽事名單 (第 {attempt + 1} 次)...")
             if HAS_CFFI:
-                # 強制使用 HTTP/1.1 避免 err 92 / err 8
-                r = requests.get(url, headers=headers, timeout=15, impersonate="chrome120", allow_http2=False)
+                # 修正：使用 http_version=1 (代表強制使用 HTTP/1.1) 解決 err 92/err 8
+                r = requests.get(url, headers=headers, timeout=15, impersonate="chrome120", http_version=1)
             else:
                 r = requests.get(url, headers=headers, timeout=15)
             
@@ -119,13 +117,18 @@ def get_realtime_match_ids():
             time.sleep(3)
     return []
 
-# ==================== 5. 爬蟲 Worker ====================
+# ==================== 5. 爬蟲引擎實作 ====================
 def scrape_eu_worker(match_chunk, progress, lock):
     batch = []
     for mid in match_chunk:
         url = f"https://m.nowscore.com/1x2Detail/{mid}_177.htm"
         try:
-            r = requests.get(url, timeout=10)
+            # 這裡同樣使用穩定模式抓取單場歐賠
+            if HAS_CFFI:
+                r = requests.get(url, timeout=10, impersonate="chrome120", http_version=1)
+            else:
+                r = requests.get(url, timeout=10)
+
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, 'html.parser')
                 home, away = parse_teams_eu(soup)
@@ -198,14 +201,20 @@ def main():
     if os.path.exists(MODEL_PATH):
         print("🧠 執行 V79 預測核心...")
         with open(MODEL_PATH, "rb") as f: bundle = pickle.load(f)
-        fu_df = V79_Core.prepare_dataset(EU_OUTPUT_FILE, AS_OUTPUT_FILE, is_train=False)
-        if not fu_df.empty:
-            rec = V79_Core.predict_and_print(bundle, fu_df)
-            web_data = {"update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "results": rec[['match_id', 'league', 'home_team', 'away_team', 'Action', 'prob_Fav', 'Pat_L']].to_dict(orient='records')}
-            with open(FINAL_JSON, 'w', encoding='utf-8') as f: json.dump(web_data, f, ensure_ascii=False, indent=4)
-            print("🎉 預測結果生成成功！")
-        else:
-            print("⚠️ 未發現符合預測條件（T-13）的賽事數據。")
+        
+        # 呼叫 V79_Core 進行預測
+        # 注意：假設 V79_Core 中有處理資料的函數與預測函數
+        try:
+            fu_df = V79_Core.prepare_dataset(EU_OUTPUT_FILE, AS_OUTPUT_FILE, is_train=False)
+            if not fu_df.empty:
+                rec = V79_Core.predict_and_print(bundle, fu_df)
+                web_data = {"update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "results": rec[['match_id', 'league', 'home_team', 'away_team', 'Action', 'prob_Fav', 'Pat_L']].to_dict(orient='records')}
+                with open(FINAL_JSON, 'w', encoding='utf-8') as f: json.dump(web_data, f, ensure_ascii=False, indent=4)
+                print("🎉 預測結果生成成功！")
+            else:
+                print("⚠️ 未發現符合預測條件（T-13）的賽事數據。")
+        except Exception as e:
+            print(f"❌ 預測呼叫出錯: {e}")
     else:
         print(f"🚨 模型檔案不存在：{MODEL_PATH}")
 
