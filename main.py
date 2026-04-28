@@ -81,64 +81,82 @@ def parse_kickoff_time_eu(soup):
     return pd.NaT
 
 # ==================== 4. 強化版獲取 Match ID (解決 Error 56) ====================
+def selenium_fetch_backup(url):
+    """
+    備援引擎：當 requests 被 Reset 時，啟動 Selenium 強行讀取數據
+    """
+    print("🔄 啟動 Selenium 備援引擎...")
+    options = Options()
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    driver = webdriver.Chrome(options=options)
+    
+    try:
+        driver.get(url)
+        # JS 檔案在瀏覽器中通常會被包在 <pre> 標籤內
+        time.sleep(3)
+        try:
+            content = driver.find_element(By.TAG_NAME, "pre").text
+        except:
+            content = driver.page_source
+        
+        if "A[0]" in content:
+            print("✨ Selenium 備援引擎成功抓取數據！")
+            return content
+    except Exception as e:
+        print(f"❌ Selenium 備援也失敗: {e}")
+    finally:
+        driver.quit()
+    return ""
+
 def get_realtime_match_ids():
     timestamp = int(time.time() * 1000)
-    # 嘗試使用 http 協議有時可以避開 TLS 阻斷
-    urls = [
-        f"https://live.nowscore.com/data/bf.js?{timestamp}",
-        f"http://live.nowscore.com/data/bf.js?{timestamp}"
-    ]
-    
+    url = f"https://live.nowscore.com/data/bf.js?{timestamp}"
     headers = {
         "Referer": "https://live.nowscore.com/",
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "*/*",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Connection": "keep-alive"
+        "User-Agent": random.choice(USER_AGENTS)
     }
 
-    for url in urls:
-        for attempt in range(3):
-            try:
-                print(f"📡 嘗試獲取賽事名單: {url} (第 {attempt + 1} 次)...")
-                
-                if HAS_CFFI:
-                    # 加入 http_version=1 並更換不同的 impersonate 版本
-                    r = requests.get(
-                        url, 
-                        headers=headers, 
-                        timeout=20, 
-                        impersonate=random.choice(["chrome110", "chrome120", "safari15_5"]),
-                        http_version=1
-                    )
-                else:
-                    r = requests.get(url, headers=headers, timeout=20)
-                
-                r.encoding = 'utf-8'
-                content = r.text
+    content = ""
+    # 策略 1: 嘗試 curl_cffi 抓取
+    try:
+        print(f"📡 嘗試快速獲取 (curl_cffi): {url}")
+        r = requests.get(url, headers=headers, timeout=15, impersonate="chrome120", http_version=1)
+        r.encoding = 'utf-8'
+        if "A[0]" in r.text:
+            content = r.text
+    except Exception as e:
+        print(f"⚠️ 快速獲取失敗 (Error 56), 準備切換備援引擎...")
 
-                if "A[0]" in content:
-                    leagues_map = {}
-                    b_raw = re.findall(r'B\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
-                    for idx, val in b_raw:
-                        parts = val.replace("'", "").split('^')
-                        if len(parts) > 0: leagues_map[idx] = parts[0].strip()
-                    
-                    a_raw = re.findall(r'A\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
-                    final_ids = []
-                    for idx, val in a_raw:
-                        parts = [p.strip().strip("'") for p in val.split('^')] if "^" in val else [p.strip().strip("'") for p in val.split(',')]
-                        if len(parts) < 10: continue
-                        if leagues_map.get(parts[1], "") in WHITE_LIST:
-                            final_ids.append(parts[0])
-                    
-                    print(f"✅ 成功獲取 {len(final_ids)} 場白名單賽事 ID")
-                    return list(set(final_ids))
-                
-                time.sleep(random.uniform(2, 5))
-            except Exception as e:
-                print(f"⚠️ 嘗試失敗: {e}")
-                time.sleep(5)
+    # 策略 2: 如果失敗，啟動 Selenium 備援
+    if not content or "A[0]" not in content:
+        content = selenium_fetch_backup(url)
+
+    # 開始解析 (與之前邏輯相同)
+    if content and "A[0]" in content:
+        try:
+            leagues_map = {}
+            b_raw = re.findall(r'B\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
+            for idx, val in b_raw:
+                parts = val.replace("'", "").split('^')
+                if len(parts) > 0: leagues_map[idx] = parts[0].strip()
+            
+            a_raw = re.findall(r'A\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
+            final_ids = []
+            for idx, val in a_raw:
+                parts = [p.strip().strip("'") for p in val.split('^')] if "^" in val else [p.strip().strip("'") for p in val.split(',')]
+                if len(parts) < 10: continue
+                league_name = leagues_map.get(parts[1], "")
+                if league_name in WHITE_LIST:
+                    final_ids.append(parts[0])
+            
+            print(f"✅ 最終成功獲取 {len(final_ids)} 場白名單賽事 ID")
+            return list(set(final_ids))
+        except Exception as e:
+            print(f"❌ 解析數據失敗: {e}")
+    
     return []
 
 # ==================== 5. 爬蟲引擎 Worker ====================
