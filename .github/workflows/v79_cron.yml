@@ -2,36 +2,77 @@ name: V79_Auto_Predictor
 
 on:
   schedule:
-    - cron: '0 * * * *'  # 每小時執行一次
-  workflow_dispatch:      # 允許手動點擊執行
+    - cron: '0 * * * *'  # 每小時
+  workflow_dispatch:
 
 jobs:
-  build:
+  predict:
     runs-on: ubuntu-latest
     permissions:
-      contents: write    # 重要：允許 Action 寫入並 Push 代碼
+      contents: write  # 🔑 關鍵！允許 git push
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4 # 升級到 v4
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
-        uses: actions/setup-python@v5 # 升級到 v5
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      - name: Install Dependencies
+      - name: Install Chrome & Dependencies
         run: |
-          pip install pandas numpy lightgbm beautifulsoup4 curl_cffi selenium requests
+          # 安裝 Chrome + Driver (Selenium 關鍵！)
+          sudo apt-get update
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 --no-install-recommends
+          sudo apt-get install xvfb  # 虛擬顯示器
+          
+          # Python 依賴
+          pip install --upgrade pip
+          pip install pandas numpy lightgbm beautifulsoup4 lxml requests curl_cffi selenium webdriver-manager
+
+      - name: Check Required Files
+        run: |
+          ls -la models_v79/ || echo "⚠️ models_v79 目錄缺失"
+          python -c "import V79_Core" || echo "⚠️ V79_Core.py 缺失"
 
       - name: Run V79 Main
-        run: python main.py
-
-      - name: Commit and Push Results
+        run: |
+          export DISPLAY=:99
+          xvfb-run -a python main.py  # 用虛擬顯示器跑 Selenium
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONUNBUFFERED: 1  # 即時輸出 log
+
+      - name: Upload Artifacts (關鍵！下載預測結果)
+        if: always()  # 即使失敗也要上傳
+        uses: actions/upload-artifact@v4
+        with:
+          name: v79-predictions-${{ github.run_number }}
+          path: |
+            web_results.json
+            predict_eu16.csv
+            predict_n1n416.csv
+            temp_eu/
+            temp_as2/
+          retention-days: 7
+
+      - name: Commit Results (自動 commit 產物)
+        if: success()  # 只在成功時 commit
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add web_results.json ah_recommend_v79.csv || exit 0
-          git commit -m "自動更新預測結果: $(date)" || exit 0
+          git add web_results.json predict_*.csv || echo "無新檔案"
+          git commit -m "V79 Auto Predict: $(date '+%Y-%m-%d %H:%M')" || echo "無變更"
           git push
+
+      - name: Notify Failure (選用：Telegram/Slack)
+        if: failure()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
