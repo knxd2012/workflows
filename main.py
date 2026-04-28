@@ -80,28 +80,61 @@ def parse_kickoff_time_eu(soup):
 def get_realtime_match_ids():
     timestamp = int(time.time() * 1000)
     url = f"https://live.nowscore.com/data/bf.js?{timestamp}"
-    headers = {"Referer": "https://live.nowscore.com/", "User-Agent": random.choice(USER_AGENTS)}
-    try:
-        print("📡 正在從 Nowscore 獲取即時賽事名單...")
-        r = requests.get(url, headers=headers, timeout=15)
-        r.encoding = 'utf-8'
-        content = r.text
-        leagues_map = {}
-        b_raw = re.findall(r'B\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
-        for idx, val in b_raw:
-            parts = val.replace("'", "").split('^')
-            if len(parts) > 0: leagues_map[idx] = parts[0].strip()
-        a_raw = re.findall(r'A\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
-        final_ids = []
-        for idx, val in a_raw:
-            parts = [p.strip().strip("'") for p in val.split('^')] if "^" in val else [p.strip().strip("'") for p in val.split(',')]
-            if len(parts) < 10: continue
-            if leagues_map.get(parts[1], "") in WHITE_LIST:
-                final_ids.append(parts[0])
-        return list(set(final_ids))
-    except Exception as e:
-        print(f"❌ 獲取 ID 失敗: {e}")
-        return []
+    headers = {
+        "Referer": "https://live.nowscore.com/", 
+        "User-Agent": random.choice(USER_AGENTS)
+    }
+
+    # 嘗試次數
+    for attempt in range(3):
+        try:
+            print(f"📡 正在嘗試獲取賽事名單 (第 {attempt + 1} 次)...")
+            
+            if HAS_CFFI:
+                # 關鍵修正：加入 allow_http2=False 強制使用 HTTP/1.1 避免 err 92
+                r = requests.get(
+                    url, 
+                    headers=headers, 
+                    timeout=15, 
+                    impersonate="chrome120", 
+                    allow_http2=False
+                )
+            else:
+                r = requests.get(url, headers=headers, timeout=15)
+
+            r.encoding = 'utf-8'
+            content = r.text
+
+            if "A[0]" not in content:
+                print(f"⚠️ 第 {attempt + 1} 次嘗試：未發現數據，重試中...")
+                time.sleep(2)
+                continue
+
+            # --- 解析邏輯開始 ---
+            leagues_map = {}
+            b_raw = re.findall(r'B\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
+            for idx, val in b_raw:
+                parts = val.replace("'", "").split('^')
+                if len(parts) > 0: leagues_map[idx] = parts[0].strip()
+            
+            a_raw = re.findall(r'A\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
+            final_ids = []
+            for idx, val in a_raw:
+                parts = [p.strip().strip("'") for p in val.split('^')] if "^" in val else [p.strip().strip("'") for p in val.split(',')]
+                if len(parts) < 10: continue
+                if leagues_map.get(parts[1], "") in WHITE_LIST:
+                    final_ids.append(parts[0])
+            
+            print(f"✅ 成功獲取 {len(final_ids)} 場白名單賽事 ID")
+            return list(set(final_ids))
+
+        except Exception as e:
+            print(f"⚠️ 第 {attempt + 1} 次嘗試失敗: {e}")
+            if "stream 1 was not closed cleanly" in str(e) or "err 8" in str(e):
+                print("💡 檢測到 HTTP/2 錯誤，下一次將強制降級協定...")
+            time.sleep(3)
+
+    return []
 
 # ==================== 3. 爬蟲引擎 ====================
 def scrape_eu_worker(match_chunk, progress, lock):
