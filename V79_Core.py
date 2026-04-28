@@ -294,10 +294,10 @@ if __name__ == "__main__":
     print("🏆 V79 實盤雙擎快取系統 (最終黃金結案版)")
     print("="*85)
 
-    TRAIN_M = "raw_features_merged.csv"
-    TRAIN_L = "asian_lines_fixed_final.csv"
-    FUT_M = "predict_eu15.csv"
-    FUT_L = "predict_n1n415.csv"
+    TRAIN_M = "predict_eu16.csv"
+    TRAIN_L = "predict_n1n416.csv"
+    FUT_M = "predict_eu16.csv"
+    FUT_L = "predict_n1n416.csv"
 
     # 若要確保模型基底是最新的乾淨特徵，可保留 True 重訓一次，後續改回 False 即可秒速推論
     FORCE_RETRAIN = False 
