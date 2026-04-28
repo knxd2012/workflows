@@ -19,7 +19,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# ==================== 1. 匯入與環境判斷 ====================
+# ==================== 1. 修正匯入與 TLS 指紋環境 ====================
 try:
     from curl_cffi import requests
     HAS_CFFI = True
@@ -29,12 +29,12 @@ except ImportError:
     HAS_CFFI = False
     print("ℹ️ 使用標準 requests 庫")
 
-# 嘗試導入 V79 核心
+# 嘗試導入核心模組
 try:
     import V79_Core
     print("✅ V79_Core 載入成功")
 except ImportError:
-    print("🚨 找不到 V79_Core.py，請確認檔名是否完全一致。")
+    print("🚨 警告：找不到 V79_Core.py")
 
 warnings.filterwarnings('ignore')
 
@@ -51,7 +51,12 @@ FINAL_JSON = "web_results.json"
 DIR_EU = "temp_eu"
 DIR_AS = "temp_as2"
 MODEL_PATH = "models_v79/AH_V79_DUAL_T13H.pkl"
-USER_AGENTS = ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"]
+
+# 更真實的 User-Agent
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+]
 
 # ==================== 3. 爬蟲解析輔助函數 ====================
 def parse_teams_eu(soup):
@@ -75,59 +80,78 @@ def parse_kickoff_time_eu(soup):
         except: pass
     return pd.NaT
 
-# ==================== 4. 自動獲取 Match ID (修正 http_version) ====================
+# ==================== 4. 強化版獲取 Match ID (解決 Error 56) ====================
 def get_realtime_match_ids():
     timestamp = int(time.time() * 1000)
-    url = f"https://live.nowscore.com/data/bf.js?{timestamp}"
-    headers = {"Referer": "https://live.nowscore.com/", "User-Agent": random.choice(USER_AGENTS)}
+    # 嘗試使用 http 協議有時可以避開 TLS 阻斷
+    urls = [
+        f"https://live.nowscore.com/data/bf.js?{timestamp}",
+        f"http://live.nowscore.com/data/bf.js?{timestamp}"
+    ]
+    
+    headers = {
+        "Referer": "https://live.nowscore.com/",
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "*/*",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Connection": "keep-alive"
+    }
 
-    for attempt in range(3):
-        try:
-            print(f"📡 正在嘗試獲取賽事名單 (第 {attempt + 1} 次)...")
-            if HAS_CFFI:
-                # 修正：使用 http_version=1 (代表強制使用 HTTP/1.1) 解決 err 92/err 8
-                r = requests.get(url, headers=headers, timeout=15, impersonate="chrome120", http_version=1)
-            else:
-                r = requests.get(url, headers=headers, timeout=15)
-            
-            r.encoding = 'utf-8'
-            content = r.text
+    for url in urls:
+        for attempt in range(3):
+            try:
+                print(f"📡 嘗試獲取賽事名單: {url} (第 {attempt + 1} 次)...")
+                
+                if HAS_CFFI:
+                    # 加入 http_version=1 並更換不同的 impersonate 版本
+                    r = requests.get(
+                        url, 
+                        headers=headers, 
+                        timeout=20, 
+                        impersonate=random.choice(["chrome110", "chrome120", "safari15_5"]),
+                        http_version=1
+                    )
+                else:
+                    r = requests.get(url, headers=headers, timeout=20)
+                
+                r.encoding = 'utf-8'
+                content = r.text
 
-            if "A[0]" not in content:
-                time.sleep(2); continue
-
-            leagues_map = {}
-            b_raw = re.findall(r'B\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
-            for idx, val in b_raw:
-                parts = val.replace("'", "").split('^')
-                if len(parts) > 0: leagues_map[idx] = parts[0].strip()
-            
-            a_raw = re.findall(r'A\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
-            final_ids = []
-            for idx, val in a_raw:
-                parts = [p.strip().strip("'") for p in val.split('^')] if "^" in val else [p.strip().strip("'") for p in val.split(',')]
-                if len(parts) < 10: continue
-                if leagues_map.get(parts[1], "") in WHITE_LIST:
-                    final_ids.append(parts[0])
-            
-            print(f"✅ 成功獲取 {len(final_ids)} 場白名單賽事 ID")
-            return list(set(final_ids))
-        except Exception as e:
-            print(f"⚠️ 第 {attempt + 1} 次嘗試失敗: {e}")
-            time.sleep(3)
+                if "A[0]" in content:
+                    leagues_map = {}
+                    b_raw = re.findall(r'B\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
+                    for idx, val in b_raw:
+                        parts = val.replace("'", "").split('^')
+                        if len(parts) > 0: leagues_map[idx] = parts[0].strip()
+                    
+                    a_raw = re.findall(r'A\[(\d+)\]\s*=\s*[\"\[](.*?)[\"\]];', content)
+                    final_ids = []
+                    for idx, val in a_raw:
+                        parts = [p.strip().strip("'") for p in val.split('^')] if "^" in val else [p.strip().strip("'") for p in val.split(',')]
+                        if len(parts) < 10: continue
+                        if leagues_map.get(parts[1], "") in WHITE_LIST:
+                            final_ids.append(parts[0])
+                    
+                    print(f"✅ 成功獲取 {len(final_ids)} 場白名單賽事 ID")
+                    return list(set(final_ids))
+                
+                time.sleep(random.uniform(2, 5))
+            except Exception as e:
+                print(f"⚠️ 嘗試失敗: {e}")
+                time.sleep(5)
     return []
 
-# ==================== 5. 爬蟲引擎實作 ====================
+# ==================== 5. 爬蟲引擎 Worker ====================
 def scrape_eu_worker(match_chunk, progress, lock):
     batch = []
     for mid in match_chunk:
         url = f"https://m.nowscore.com/1x2Detail/{mid}_177.htm"
         try:
-            # 這裡同樣使用穩定模式抓取單場歐賠
+            # 單場抓取也要使用偽裝
             if HAS_CFFI:
-                r = requests.get(url, timeout=10, impersonate="chrome120", http_version=1)
+                r = requests.get(url, timeout=15, impersonate="chrome110", http_version=1)
             else:
-                r = requests.get(url, timeout=10)
+                r = requests.get(url, timeout=15)
 
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, 'html.parser')
@@ -153,7 +177,11 @@ def scrape_eu_worker(match_chunk, progress, lock):
 
 def scrape_as_worker(match_chunk, progress, lock):
     options = Options()
-    options.add_argument('--headless=new'); options.add_argument('--no-sandbox'); options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    # 增加隱身模式特徵
+    options.add_argument('--disable-blink-features=AutomationControlled')
     driver = webdriver.Chrome(options=options)
     batch = []
     for mid in match_chunk:
@@ -161,7 +189,7 @@ def scrape_as_worker(match_chunk, progress, lock):
             url = f"https://vip.titan007.com/changeDetail/multiHandicap.aspx?id={mid}&companyID=47&n={n}"
             try:
                 driver.get(url)
-                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//table[@bgcolor='#AFC7E2']//tr[position()>1]")))
+                WebDriverWait(driver, 8).until(EC.presence_of_element_located((By.XPATH, "//table[@bgcolor='#AFC7E2']//tr[position()>1]")))
                 soup = BeautifulSoup(driver.page_source, 'html.parser')
                 table = soup.find('table', {'cellspacing': '1', 'bgcolor': '#AFC7E2'})
                 if table:
@@ -182,15 +210,17 @@ def merge_csv(temp_dir, output_file):
     df.to_csv(output_file, index=False, encoding='utf-8-sig')
     for f in files: os.remove(f)
 
-# ==================== 6. 主流程指揮 ====================
+# ==================== 6. 指揮中心 ====================
 def main():
     start_time = time.time()
     os.makedirs(DIR_EU, exist_ok=True); os.makedirs(DIR_AS, exist_ok=True)
     
+    # 1. 獲取 ID
     ids = get_realtime_match_ids()
     if not ids:
-        print("📭 今日無符合條件賽事，腳本結束。"); return
+        print("📭 獲取 ID 失敗或今日無賽事。"); return
     
+    # 2. 爬取
     lock = threading.Lock(); progress = {'eu': 0, 'as': 0}
     with ThreadPoolExecutor(max_workers=5) as executor:
         executor.submit(scrape_eu_worker, ids, progress, lock)
@@ -198,25 +228,28 @@ def main():
     
     merge_csv(DIR_EU, EU_OUTPUT_FILE); merge_csv(DIR_AS, AS_OUTPUT_FILE)
 
+    # 3. 預測
     if os.path.exists(MODEL_PATH):
-        print("🧠 執行 V79 預測核心...")
+        print("🧠 執行 V79 核心預測...")
         with open(MODEL_PATH, "rb") as f: bundle = pickle.load(f)
-        
-        # 呼叫 V79_Core 進行預測
-        # 注意：假設 V79_Core 中有處理資料的函數與預測函數
         try:
+            # 呼叫無損原版 V79_Core 的預測邏輯
             fu_df = V79_Core.prepare_dataset(EU_OUTPUT_FILE, AS_OUTPUT_FILE, is_train=False)
             if not fu_df.empty:
                 rec = V79_Core.predict_and_print(bundle, fu_df)
-                web_data = {"update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "results": rec[['match_id', 'league', 'home_team', 'away_team', 'Action', 'prob_Fav', 'Pat_L']].to_dict(orient='records')}
-                with open(FINAL_JSON, 'w', encoding='utf-8') as f: json.dump(web_data, f, ensure_ascii=False, indent=4)
-                print("🎉 預測結果生成成功！")
+                web_data = {
+                    "update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                    "results": rec[['match_id', 'league', 'home_team', 'away_team', 'Action', 'prob_Fav', 'Pat_L']].to_dict(orient='records')
+                }
+                with open(FINAL_JSON, 'w', encoding='utf-8') as f:
+                    json.dump(web_data, f, ensure_ascii=False, indent=4)
+                print("🎉 預測成功生成！")
             else:
-                print("⚠️ 未發現符合預測條件（T-13）的賽事數據。")
+                print("⚠️ 數據集為空（可能無 T-13 數據）")
         except Exception as e:
-            print(f"❌ 預測呼叫出錯: {e}")
+            print(f"❌ 預測失敗: {e}")
     else:
-        print(f"🚨 模型檔案不存在：{MODEL_PATH}")
+        print(f"🚨 找不到模型檔案: {MODEL_PATH}")
 
 if __name__ == "__main__":
     main()
