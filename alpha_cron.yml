@@ -1,0 +1,31 @@
+name: Alpha Sniper T-1H Auto Runner
+
+on:
+  # 🤖 核心定時：每 30 分鐘自動啟動一次，全天候巡邏
+  schedule:
+    - cron: '*/30 * * * *'
+  
+  # 🚀 允許手動點擊執行（方便你現在測試）
+  workflow_dispatch:
+
+jobs:
+  run-robot:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # 🛠️ 安裝微軟官方 Playwright 自動化瀏覽器核心
+    - name: Install Dependencies & Playwright
+      run: |
+        pip install playwright
+        playwright install chromium
+
+    # 🎯 執行自動點擊預測與 Discord 發佈
+    - name: Execute Cloud Robot
+      run: python cloud_robot.py
