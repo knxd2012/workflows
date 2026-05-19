@@ -2,11 +2,11 @@ name: Alpha Sniper Cloud Fleet
 
 on:
   schedule:
-    - cron: '0 * * * *'        # ⏱️ 保持雲端自帶的每小時整點全自動保底巡邏
-  workflow_dispatch:          # 網頁端手動點擊「Run workflow」按鈕
-  repository_dispatch:        # 🔌 核心外部接口：允許你家裡的 Discord Bot 透過 API 踢醒它
+    - cron: '2 * * * *'        # ⏱️ 修改這裡！從此 GitHub Actions 自動在每小時的 02 分（例如 14:02, 15:02）開跑
+  workflow_dispatch:
+  repository_dispatch:
     types: [discord_trigger]
-
+    
 jobs:
   run_radar_fleet:
     runs-on: ubuntu-latest
