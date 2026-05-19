@@ -1,30 +1,32 @@
-name: Alpha Sniper T-1H Auto Runner
+name: Alpha Sniper Cloud Fleet
 
 on:
   schedule:
-    - cron: '0 * * * *'        # 依然保留 GitHub 自帶的每小時自動保底
-  workflow_dispatch:          # 保留網頁手動點擊按鈕
-  repository_dispatch:        # 👈 核心新增：允許你的 Discord Bot 透過 API 遠端踢醒它
+    - cron: '0 * * * *'        # ⏱️ 保持雲端自帶的每小時整點全自動保底巡邏
+  workflow_dispatch:          # 網頁端手動點擊「Run workflow」按鈕
+  repository_dispatch:        # 🔌 核心外部接口：允許你家裡的 Discord Bot 透過 API 踢醒它
     types: [discord_trigger]
 
 jobs:
-  run-robot:
+  run_radar_fleet:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: 1. 複製倉庫代碼
+        uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: 2. 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    # 🛠️ 安裝微軟官方 Playwright 自動化瀏覽器核心
-    - name: Install Dependencies & Playwright
-      run: |
-        pip install playwright
-        playwright install chromium
+      - name: 3. 安裝虛擬瀏覽器依賴庫
+        run: |
+          pip install playwright requests
+          playwright install chromium
 
-    # 🎯 執行自動點擊預測與 Discord 發佈
-    - name: Execute Cloud Robot
-      run: python cloud_robot.py
+      - name: 4. 喚醒邊緣大腦執行虛擬掃描
+        # 💡 精妙之處：自動去讀取 Discord Bot 丟過來的 client_payload.match_id
+        # 如果是定時觸發或沒帶參數，這裡會自動變成空字串 ""，從而自動切換為全網巡邏模式！
+        run: |
+          python cloud_robot.py --match_id "${{ github.event.client_payload.match_id }}"
