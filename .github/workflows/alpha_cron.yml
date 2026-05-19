@@ -1,0 +1,32 @@
+name: Alpha Sniper Cloud Fleet
+
+on:
+  schedule:
+    - cron: '2 * * * *'        # ⏱️ 修改這裡！從此 GitHub Actions 自動在每小時的 02 分（例如 14:02, 15:02）開跑
+  workflow_dispatch:
+  repository_dispatch:
+    types: [discord_trigger]
+    
+jobs:
+  run_radar_fleet:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. 複製倉庫代碼
+        uses: actions/checkout@v4
+
+      - name: 2. 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. 安裝虛擬瀏覽器依賴庫
+        run: |
+          pip install playwright requests
+          playwright install chromium
+
+      - name: 4. 喚醒邊緣大腦執行虛擬掃描
+        # 💡 精妙之處：自動去讀取 Discord Bot 丟過來的 client_payload.match_id
+        # 如果是定時觸發或沒帶參數，這裡會自動變成空字串 ""，從而自動切換為全網巡邏模式！
+        run: |
+          python cloud_robot.py --match_id "${{ github.event.client_payload.match_id }}"
